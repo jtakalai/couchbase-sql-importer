@@ -352,8 +352,8 @@ public class SqlImporter {
                         long t = startDate.getTime();
                         for (int i = 0; i < repeatCount; i++) {
                             t += repeatStepMillis;
-                            Date d = new Date(t);
-                            map.put(dateField, dateFormatter.format(d));
+                            calendar.setTimeInMillis(t);
+                            map.put(dateField, dateFormatter.format(calendar.getTime()));
                             if (yearField != null && yearField.length() > 0) {
                                 map.put(yearField, calendar.get(Calendar.YEAR));
                             }
