@@ -4,6 +4,7 @@ import com.couchbase.client.CouchbaseClient;
 import com.couchbase.client.protocol.views.DesignDocument;
 import com.couchbase.client.protocol.views.ViewDesign;
 import com.google.gson.Gson;
+import net.spy.memcached.internal.CheckedOperationTimeoutException;
 
 import java.io.FileInputStream;
 import java.net.URI;
@@ -269,114 +270,137 @@ public class SqlImporter {
         if (createTableViewEnable) {
             this.createViewsForPrimaryKey(tableName);
         }
-        PreparedStatement preparedStatement = null;
-        String selectSQL = "SELECT * FROM " + tableName;
-        Gson gson = new Gson();
-        try {
+        int rowCount = 0;
+        int rowsMoved = 0;
 
-            preparedStatement = this.getConnection().prepareStatement(selectSQL);
-            ResultSet rs = preparedStatement.executeQuery();
-            ResultSetMetaData rsmd = rs.getMetaData();
-            int numColumns = rsmd.getColumnCount();
+        boolean retry = false;
+        long startTime = System.currentTimeMillis();
+        do {
+            retry = false;
+            PreparedStatement preparedStatement = null;
+            String selectSQL = "SELECT * FROM " + tableName;
+            if (rowCount > 0) {
+                selectSQL = selectSQL + " LIMIT " + rowCount + ",18446744073709551615;";
+            }
+            Gson gson = new Gson();
+            try {
+                preparedStatement = this.getConnection().prepareStatement(selectSQL);
+                ResultSet rs = preparedStatement.executeQuery();
+                ResultSetMetaData rsmd = rs.getMetaData();
+                int numColumns = rsmd.getColumnCount();
 
-            int rowCount = 0;
-            int rowsMoved = 0;
-            while (rs.next()) {
-                rowCount++;
-                Map<String, Object> map = new HashMap<String, Object>();
+                while (rs.next()) {
+                    rowCount++;
+                    Map<String, Object> map = new HashMap<String, Object>();
 
-                for (int i = 1; i < numColumns + 1; i++) {
-                    String columnName = this.getNamewithCase(rsmd.getColumnName(i), typeFieldCase);
+                    for (int i = 1; i < numColumns + 1; i++) {
+                        String columnName = this.getNamewithCase(rsmd.getColumnName(i), typeFieldCase);
 
-                    if (rsmd.getColumnType(i) == java.sql.Types.ARRAY) {
-                        map.put(columnName, rs.getArray(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.BIGINT) {
-                        map.put(columnName, rs.getLong(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.BOOLEAN) {
-                        map.put(columnName, rs.getBoolean(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.BLOB) {
-                        map.put(columnName, rs.getBlob(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.DOUBLE) {
-                        map.put(columnName, rs.getDouble(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.FLOAT) {
-                        map.put(columnName, rs.getFloat(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.INTEGER) {
-                        map.put(columnName, rs.getInt(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.NVARCHAR) {
-                        map.put(columnName, rs.getNString(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.VARCHAR) {
-                        map.put(columnName, rs.getString(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.TINYINT) {
-                        map.put(columnName, rs.getInt(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.SMALLINT) {
-                        map.put(columnName, rs.getInt(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.DATE) {
-                        map.put(columnName, rs.getDate(columnName));
-                    } else if (rsmd.getColumnType(i) == java.sql.Types.TIMESTAMP) {
-                        map.put(columnName, rs.getTimestamp(columnName));
+                        if (rsmd.getColumnType(i) == java.sql.Types.ARRAY) {
+                            map.put(columnName, rs.getArray(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.BIGINT) {
+                            map.put(columnName, rs.getLong(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.BOOLEAN) {
+                            map.put(columnName, rs.getBoolean(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.BLOB) {
+                            map.put(columnName, rs.getBlob(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.DOUBLE) {
+                            map.put(columnName, rs.getDouble(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.FLOAT) {
+                            map.put(columnName, rs.getFloat(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.INTEGER) {
+                            map.put(columnName, rs.getInt(columnName));
+                        /*} else if (rsmd.getColumnType(i) == java.sql.Types.NVARCHAR) {
+                            map.put(columnName, rs.getNString(columnName));*/
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.VARCHAR) {
+                            map.put(columnName, rs.getString(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.TINYINT) {
+                            map.put(columnName, rs.getInt(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.SMALLINT) {
+                            map.put(columnName, rs.getInt(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.DATE) {
+                            map.put(columnName, rs.getDate(columnName));
+                        } else if (rsmd.getColumnType(i) == java.sql.Types.TIMESTAMP) {
+                            map.put(columnName, rs.getTimestamp(columnName));
+                        } else {
+                            map.put(columnName, rs.getObject(columnName));
+                        }
+                    }
+
+                    if (typeField != null && typeField.length() > 0) {
+                        map.put(typeField, typeName);
+                    }
+
+                    String originalId = (idField != null && idField.length() > 0) ?
+                            map.get(idField).toString() :
+                            tableName + ":" + Integer.toString(rowCount);
+                    if (dateField != null && dateField.length() > 0) {
+                        String dateString = map.get(dateField).toString();
+                        Calendar calendar = Calendar.getInstance();
+                        SimpleDateFormat dateFormatter = new SimpleDateFormat("MMM d, yyyy hh:mm:ss a");    // "Jan 14, 2016 10:06:35 PM"
+                        SimpleDateFormat backupFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.0");    // "2016-03-15 19:04:29.0"
+                        Date startDate = dateFormatter.parse(dateString, new ParsePosition(0));
+                        if (startDate == null) {
+                            startDate = backupFormatter.parse(dateString, new ParsePosition(0));
+                        }
+                        if (startDate == null) {
+                            System.out.println("Skipped " + dateString);
+                            continue;
+                        }
+
+                        System.out.println("Writing " + originalId + " x" + Integer.toString(repeatCount));
+                        long t = startDate.getTime();
+                        for (int i = 0; i < repeatCount; i++) {
+                            t += repeatStepMillis;
+                            Date d = new Date(t);
+                            map.put(dateField, dateFormatter.format(d));
+                            if (yearField != null && yearField.length() > 0) {
+                                map.put(yearField, calendar.get(Calendar.YEAR));
+                            }
+                            if (monthField != null && monthField.length() > 0) {
+                                map.put(monthField, calendar.get(Calendar.MONTH));
+                            }
+                            if (dayField != null && dayField.length() > 0) {
+                                map.put(dayField, calendar.get(Calendar.DAY_OF_MONTH));
+                            }
+                            if (hourField != null && hourField.length() > 0) {
+                                map.put(hourField, calendar.get(Calendar.HOUR_OF_DAY));
+                            }
+                            String key = originalId + "_" + Integer.toString(i);
+                            this.getCouchbaseClient().set(key, gson.toJson(map)).get();
+                        }
                     } else {
-                        map.put(columnName, rs.getObject(columnName));
+                        this.getCouchbaseClient().set(originalId, gson.toJson(map)).get();
                     }
+
+                    rowsMoved++;
+
+
+
+
+
                 }
-
-                if (typeField != null && typeField.length() > 0) {
-                    map.put(typeField, typeName);
+            } catch (RuntimeException e) {
+                if (e.getCause() instanceof CheckedOperationTimeoutException) {
+                    System.out.println(e.getMessage());
+                    System.out.println("Sleeping a while and re-trying...");
+                    Thread.sleep(5000);
+                    retry = true;
                 }
-
-                String originalId = (idField != null && idField.length() > 0) ?
-                        map.get(idField).toString() :
-                        tableName + ":" + Integer.toString(rowCount);
-                if (dateField != null && dateField.length() > 0) {
-                    String dateString = map.get(dateField).toString();
-                    Calendar calendar = Calendar.getInstance();
-                    SimpleDateFormat dateFormatter = new SimpleDateFormat("MMM d, yyyy hh:mm:ss a");    // "Jan 14, 2016 10:06:35 PM"
-                    SimpleDateFormat backupFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.0");    // "2016-03-15 19:04:29.0"
-                    Date startDate = dateFormatter.parse(dateString, new ParsePosition(0));
-                    if (startDate == null) {
-                        startDate = backupFormatter.parse(dateString, new ParsePosition(0));
-                    }
-                    if (startDate == null) {
-                        System.out.println("Skipped " + dateString);
-                        continue;
-                    }
-
-                    System.out.println("Writing " + originalId + " x" + Integer.toString(repeatCount));
-                    long t = startDate.getTime();
-                    for (int i = 0; i < repeatCount; i++) {
-                        t += repeatStepMillis;
-                        Date d = new Date(t);
-                        map.put(dateField, dateFormatter.format(d));
-                        if (yearField != null && yearField.length() > 0) {
-                            map.put(yearField, calendar.get(Calendar.YEAR));
-                        }
-                        if (monthField != null && monthField.length() > 0) {
-                            map.put(monthField, calendar.get(Calendar.MONTH));
-                        }
-                        if (dayField != null && dayField.length() > 0) {
-                            map.put(dayField, calendar.get(Calendar.DAY_OF_MONTH));
-                        }
-                        if (hourField != null && hourField.length() > 0) {
-                            map.put(hourField, calendar.get(Calendar.HOUR_OF_DAY));
-                        }
-                        String key = originalId + "_" + Integer.toString(i);
-                        this.getCouchbaseClient().set(key, gson.toJson(map)).get();
-                    }
-                } else {
-                    this.getCouchbaseClient().set(originalId, gson.toJson(map)).get();
+            } catch (SQLException e) {
+                // got '2.147483648E9' in column '9' is outside valid range for the datatype INTEGER.
+                System.out.println(e.getMessage());
+                System.out.println("Continuing from the next line #" + rowCount);
+                rowCount++;
+                retry = true;
+            } finally {
+                if (preparedStatement != null) {
+                    preparedStatement.close();
                 }
-
-                rowsMoved++;
             }
-            System.out.println("    " + rowsMoved + " out of " + rowCount + " records moved to Couchbase.");
-
-        } catch (SQLException e) {
-            System.out.println(e.getMessage());
-        } finally {
-            if (preparedStatement != null) {
-                preparedStatement.close();
-            }
-        }
-
+        } while (retry);
+        long timing = System.currentTimeMillis() - startTime;
+        System.out.println("    " + rowsMoved + " out of " + rowCount + " records moved to Couchbase.");
     }
 
     private void createViewsForPrimaryKey(String tableName) {
