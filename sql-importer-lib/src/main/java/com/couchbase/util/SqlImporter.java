@@ -337,8 +337,8 @@ public class SqlImporter {
                     if (dateField != null && dateField.length() > 0) {
                         String dateString = map.get(dateField).toString();
                         Calendar calendar = Calendar.getInstance();
-                        SimpleDateFormat dateFormatter = new SimpleDateFormat("MMM d, yyyy hh:mm:ss a");    // "Jan 14, 2016 10:06:35 PM"
-                        SimpleDateFormat backupFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.0");    // "2016-03-15 19:04:29.0"
+                        SimpleDateFormat dateFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.0");    // "2016-03-15 19:04:29.0"
+                        SimpleDateFormat backupFormatter = new SimpleDateFormat("MMM d, yyyy hh:mm:ss a");    // "Jan 14, 2016 10:06:35 PM"
                         Date startDate = dateFormatter.parse(dateString, new ParsePosition(0));
                         if (startDate == null) {
                             startDate = backupFormatter.parse(dateString, new ParsePosition(0));
